@@ -5,6 +5,7 @@ const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const HOST = '0.0.0.0';
 const DB_FILE = path.join(__dirname, 'todos.json');
 
 // Middleware
@@ -170,7 +171,7 @@ app.get('/', (req, res) => {
 
 // Initialize database and start server
 initializeDB().then(() => {
-  app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+  app.listen(PORT, HOST, () => {
+    console.log(`🚀 App running at http://${HOST}:${PORT}`);
   });
 });
