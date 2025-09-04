@@ -2,13 +2,37 @@ class TodoApp {
     constructor() {
         this.todos = [];
         this.currentEditId = null;
+        this.socket = io();
         this.init();
     }
 
     init() {
         this.bindEvents();
+        this.setupWebSocket();
         this.loadTodos();
         this.setDefaultDates();
+    }
+
+    setupWebSocket() {
+        // Listen for real-time updates from server
+        this.socket.on('todosUpdated', (updatedTodos) => {
+            this.todos = updatedTodos;
+            this.renderTodos();
+            
+            // Show a subtle notification that data was updated from another device
+            if (document.visibilityState === 'visible') {
+                this.showRealtimeNotification('List updated from another device');
+            }
+        });
+
+        // Handle connection status
+        this.socket.on('connect', () => {
+            console.log('Connected to server');
+        });
+
+        this.socket.on('disconnect', () => {
+            console.log('Disconnected from server');
+        });
     }
 
     bindEvents() {
@@ -152,7 +176,7 @@ class TodoApp {
 
             if (response.ok) {
                 this.closeModal();
-                await this.loadTodos();
+                // Don't reload todos here - WebSocket will handle the update
                 this.showSuccess(this.currentEditId ? 'Task updated successfully!' : 'Task created successfully!');
             } else {
                 this.showError('Failed to save todo');
@@ -177,13 +201,126 @@ class TodoApp {
         try {
             const response = await fetch(`/api/todos/${id}`, { method: 'DELETE' });
             if (response.ok) {
-                await this.loadTodos();
+                // Don't reload todos here - WebSocket will handle the update
                 this.showSuccess('Task deleted successfully!');
             } else {
                 this.showError('Failed to delete todo');
             }
         } catch (error) {
             this.showError('Network error: ' + error.message);
+        }
+    }
+
+    async handleFileSelect(files) {
+        const fileArray = Array.from(files);
+        
+        for (const file of fileArray) {
+            if (file.size > 10 * 1024 * 1024) {
+                this.showError(`File ${file.name} is too large. Maximum size is 10MB.`);
+                continue;
+            }
+            
+            await this.uploadFile(file);
+        }
+    }
+
+    async uploadFile(file) {
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        try {
+            this.showUploadProgress(`Uploading ${file.name}...`);
+            
+            const response = await fetch('/api/upload', {
+                method: 'POST',
+                body: formData
+            });
+
+            if (response.ok) {
+                const fileInfo = await response.json();
+                this.pendingAttachments.push(fileInfo);
+                this.renderAttachments();
+                this.hideUploadProgress();
+            } else {
+                const error = await response.json();
+                this.showError(`Failed to upload ${file.name}: ${error.error}`);
+                this.hideUploadProgress();
+            }
+        } catch (error) {
+            this.showError(`Upload failed: ${error.message}`);
+            this.hideUploadProgress();
+        }
+    }
+
+    renderAttachments() {
+        const attachmentsList = document.getElementById('attachmentsList');
+        
+        if (this.pendingAttachments.length === 0) {
+            attachmentsList.innerHTML = '';
+            return;
+        }
+
+        attachmentsList.innerHTML = this.pendingAttachments.map((file, index) => `
+            <div class="attachment-item">
+                <div class="attachment-info">
+                    <span class="file-icon">${this.getFileIcon(file.mimetype)}</span>
+                    <div class="attachment-details">
+                        <div class="attachment-name">${file.originalName}</div>
+                        <div class="attachment-size">${this.formatFileSize(file.size)}</div>
+                    </div>
+                </div>
+                <button type="button" class="remove-attachment" onclick="app.removeAttachment(${index})" title="Remove file">
+                    ×
+                </button>
+            </div>
+        `).join('');
+    }
+
+    removeAttachment(index) {
+        const attachment = this.pendingAttachments[index];
+        
+        // Remove from server if it's a newly uploaded file
+        if (attachment.filename && !this.currentEditId) {
+            fetch(`/api/files/${attachment.filename}`, { method: 'DELETE' })
+                .catch(error => console.log('Error deleting file:', error));
+        }
+        
+        this.pendingAttachments.splice(index, 1);
+        this.renderAttachments();
+    }
+
+    getFileIcon(mimetype) {
+        if (mimetype.startsWith('image/')) return '🖼️';
+        if (mimetype.includes('pdf')) return '📄';
+        if (mimetype.includes('document') || mimetype.includes('word')) return '📝';
+        if (mimetype.includes('spreadsheet') || mimetype.includes('excel')) return '📊';
+        if (mimetype.includes('presentation') || mimetype.includes('powerpoint')) return '📊';
+        if (mimetype.includes('zip') || mimetype.includes('rar')) return '📦';
+        if (mimetype.startsWith('text/')) return '📄';
+        return '📁';
+    }
+
+    formatFileSize(bytes) {
+        if (bytes === 0) return '0 Bytes';
+        const k = 1024;
+        const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    }
+
+    showUploadProgress(message) {
+        const attachmentsList = document.getElementById('attachmentsList');
+        const progressDiv = document.createElement('div');
+        progressDiv.className = 'upload-progress';
+        progressDiv.id = 'uploadProgress';
+        progressDiv.textContent = message;
+        attachmentsList.appendChild(progressDiv);
+    }
+
+    hideUploadProgress() {
+        const progressDiv = document.getElementById('uploadProgress');
+        if (progressDiv) {
+            progressDiv.remove();
         }
     }
 
@@ -200,6 +337,44 @@ class TodoApp {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    }
+
+    showRealtimeNotification(message) {
+        // Subtle notification for real-time updates
+        const notification = document.createElement('div');
+        notification.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 12px 20px;
+            border-radius: 8px;
+            color: white;
+            font-weight: 500;
+            z-index: 1001;
+            max-width: 300px;
+            background-color: #3498db;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            transform: translateX(100%);
+            transition: transform 0.3s ease;
+            font-size: 14px;
+            opacity: 0.9;
+        `;
+        notification.textContent = message;
+        
+        document.body.appendChild(notification);
+        
+        setTimeout(() => {
+            notification.style.transform = 'translateX(0)';
+        }, 10);
+        
+        setTimeout(() => {
+            notification.style.transform = 'translateX(100%)';
+            setTimeout(() => {
+                if (document.body.contains(notification)) {
+                    document.body.removeChild(notification);
+                }
+            }, 300);
+        }, 2000);
     }
 
     showSuccess(message) {
